@@ -1,0 +1,204 @@
+Script langkah kerja:
+#mendownload file dataset dari GEO
+#membuka di Rstudio
+setwd("C:/Users/Putri/Documents/GSE186822") # ganti sesuai lokasi file
+counts <- read.delim("GSE186822_counts_anno.txt", header=TRUE, stringsAsFactors=FALSE)
+head(counts)
+dim(counts)
+
+#bersihkan data dari kolom kosong
+counts_clean <- counts[, 1:6] # gene_id + 5 kolom ekspresi
+head(counts_clean)
+dim(counts_clean)
+
+#membuat matrix count dan metadata (design matix/kerangka statistik)
+# Hapus duplikat berdasarkan kolom gene_id
+counts_unique <- counts_clean[!duplicated(counts_clean$gene_id), ]
+
+# Cek ulang jumlah baris
+nrow(counts_clean)
+nrow(counts_unique) # Harus sedikit lebih kecil (karena duplikat dibuang)
+
+# Ubah jadi matrix ekspresi
+countData <- counts_unique[, -1]
+rownames(countData) <- counts_unique$gene_id
+dim(countData) 
+head(countData[, 1:3]) # untuk lihat 3 kolom pertama untuk cek saja
+
+#membuat metadata condition
+condition <- factor(c("CLP","CLP","CLP","CON","CON"))
+coldata <- data.frame(row.names = colnames(countData), condition)
+
+# Cek isi metadata
+coldata
+
+#membuat Deseq dataset 
+dds <- DESeqDataSetFromMatrix(countData = round(countData),
+ colData = coldata,
+ design = ~ condition)
+
+# Jalankan analisis diferensial
+dds <- DESeq(dds)
+res <- results(dds)
+
+# Lihat hasil awal
+head(res)
+summary(res)
+
+
+#visualisasi
+#volcanoplot
+library(ggplot2)
+
+res_df <- as.data.frame(res)
+res_df <- na.omit(res_df)
+res_df$Significant <- "Not Sig"
+res_df$Significant[res_df$padj < 0.05 & res_df$log2FoldChange > 1] <- "Up"
+res_df$Significant[res_df$padj < 0.05 & res_df$log2FoldChange < -1] <- "Down"
+
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue), color = Significant)) +
+ geom_point(alpha = 0.6) +
+ scale_color_manual(values = c("blue", "grey", "red")) +
+ geom_vline(xintercept = c(-1, 1), linetype="dashed") +
+ geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+ labs(title = "Volcano Plot - CLP vs Control (GSE186822)",
+ x = "log2 Fold Change", y = "-log10(p-value)") +
+ theme_minimal()
+
+#heatmap 50 gen paling signifikan
+library(pheatmap)
+library(RColorBrewer)
+
+top50 <- res_df[order(res_df$padj), ][1:50, ]
+mat <- countData[rownames(countData) %in% rownames(top50), ]
+mat <- t(scale(t(log2(mat + 1)))) # normalisasi log2 dan z-score
+
+pheatmap(mat,
+ annotation_col = coldata,
+ show_rownames = FALSE,3
+ color = colorRampPalette(rev(brewer.pal(n = 9, "RdYlBu")))(255),
+ main = "Top 50 DEGs - CLP vs Control")
+
+#analisis GO Pathway
+#1 instal paket yang dibutuhkan
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("clusterProfiler", "org.Mm.eg.db", "enrichplot"))
+
+#2 panggil paket
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(enrichplot)
+library(ggplot2)
+
+#3 Siapkan daftar gen signifikan untuk analisis
+Kita ambil gen dengan padj < 0.05 dan |log2FoldChange| > 1 agar fokus ke gen yang perubahannya jelas.
+
+# Ubah hasil DESeq ke data.frame
+res_df <- as.data.frame(res)
+res_df <- na.omit(res_df)
+
+# Ambil gen signifikan
+sig_genes <- subset(res_df, padj < 0.05 & abs(log2FoldChange) > 1)
+
+# Jumlah gen signifikan
+nrow(sig_genes)
+head(sig_genes)
+
+# Coba konversi ID ke simbol gen
+gene_list <- bitr(sig_genes$gene_id,
+ fromType = "ENTREZID",
+ toType = "SYMBOL",
+ OrgDb = org.Mm.eg.db)
+
+head(gene_list)
+kalau muncul <0 rows> solusinya:
+sig_genes$gene_id <- rownames(sig_genes)
+head(sig_genes$gene_id)
+
+#pastiin dulu Gene ID
+gene_list <- bitr(sig_genes$gene_id,
+ fromType = "ENTREZID",
+ toType = "SYMBOL",
+ OrgDb = org.Mm.eg.db)
+head(gene_list)
+
+Lanjut, 
+#4 analisis GO
+library(org.Mm.eg.db)
+library(clusterProfiler)
+
+ego <- enrichGO(gene = sig_genes$gene_id,
+ OrgDb = org.Mm.eg.db,
+ keyType = "ENTREZID",
+ ont = "BP",
+ pAdjustMethod = "BH",
+ pvalueCutoff = 0.05,
+ readable = TRUE)
+
+dotplot(ego, showCategory = 10, title = "GO Enrichment (Biological Process)")
+
+#5 analisis KEGG
+ekegg <- enrichKEGG(gene = sig_genes$gene_id,
+ organism = "mmu",
+ pvalueCutoff = 0.05)
+barplot(ekegg, showCategory = 10, title = "KEGG Pathway Enrichment")
+
+Kalau mau Gonya ada 3 parameter:
+kamu bisa menjalankan tiga kali analisis GO secara terpisah:
+ego_BP <- enrichGO(gene = sig_genes$gene_id, OrgDb = org.Mm.eg.db,
+ keyType = "ENTREZID", ont = "BP", pAdjustMethod = "BH",
+ pvalueCutoff = 0.05, readable = TRUE)
+
+ego_CC <- enrichGO(gene = sig_genes$gene_id, OrgDb = org.Mm.eg.db,
+ keyType = "ENTREZID", ont = "CC", pAdjustMethod = "BH",
+ pvalueCutoff = 0.05, readable = TRUE)
+
+ego_MF <- enrichGO(gene = sig_genes$gene_id, OrgDb = org.Mm.eg.db,
+ keyType = "ENTREZID", ont = "MF", pAdjustMethod = "BH",
+ pvalueCutoff = 0.05, readable = TRUE)
+
+Lalu tampilkan:
+barplot(ego_BP, showCategory = 10, title = "GO - Biological Process")
+barplot(ego_CC, showCategory = 10, title = "GO - Cellular Component")
+barplot(ego_MF, showCategory = 10, title = "GO - Molecular Function")
+
+Kalau mau hasil plotnya digabung:
+Kamu bisa menambahkan kolom Category (BP, CC, MF) ke masing-masing hasil ego_ lalu digabung dengan rbind():
+
+ego_BP_df <- as.data.frame(ego_BP)
+ego_BP_df$Category <- "Biological Process"
+
+ego_CC_df <- as.data.frame(ego_CC)
+ego_CC_df$Category <- "Cellular Component"
+
+ego_MF_df <- as.data.frame(ego_MF)
+ego_MF_df$Category <- "Molecular Function"
+
+# Gabungkan semua
+ego_all <- rbind(ego_BP_df, ego_CC_df, ego_MF_df)
+
+Kemudian visualisasi dengan:
+library(ggplot2)
+
+# Ambil top 10 kategori paling signifikan dari tiap ontologi
+top_GO <- ego_all %>%
+ group_by(Category) %>%
+ top_n(-10, p.adjust) # ambil 10 term dengan p.adjust terendah
+
+# Buat barplot gabungan
+ggplot(top_GO, aes(x = reorder(Description, -log10(p.adjust)),
+ y = -log10(p.adjust),
+ fill = Category)) +
+ geom_bar(stat = "identity", position = "dodge") +
+ coord_flip() +
+ labs(title = "GO Enrichment (BP, CC, MF)",
+ x = "GO Terms",
+ y = "-log10(Adjusted p-value)") +
+ scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73")) + # warna custom
+ theme_minimal() +
+ theme(axis.text.y = element_text(size = 8),
+ legend.position = "top")
+
+
